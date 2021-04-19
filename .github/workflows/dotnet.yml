@@ -1,0 +1,25 @@
+name: Build and Test
+
+on: [push, pull_request]
+
+jobs:
+  build:
+  
+    runs-on: ubuntu-latest
+
+strategy:
+      matrix:
+        build_config: ['Release', 'Debug']
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v1
+      with:
+        dotnet-version: 5.0.x
+    - name: Restore dependencies
+      run: dotnet restore
+    - name: Build
+      run: dotnet build --no-restore --configuration ${{ matrix.build_config }}
+    - name: Test
+      run: dotnet test --no-build --verbosity normal --configuration ${{ matrix.build_config }}
