@@ -7,7 +7,7 @@ jobs:
   
     runs-on: ubuntu-latest
 
-strategy:
+    strategy:
       matrix:
         build_config: ['Release', 'Debug']
 
