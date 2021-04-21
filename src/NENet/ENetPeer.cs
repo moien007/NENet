@@ -583,7 +583,17 @@ namespace ENetDotNet
             return outgoingCommand;
         }
 
-        internal ENetIncomingCommand? QueueIncomingCommand(in ENetProtocol command, ReadOnlySpan<byte> data, ENetPacketFlags flags, uint fragmentCount)
+        internal ENetIncomingCommand? QueueIncomingCommand(in ENetProtocol command, ReadOnlySpan<byte> data, int dataLength, ENetPacketFlags flags, uint fragmentCount)
+        {
+            throw new NotImplementedException();
+        }
+
+        internal void DispatchIncomingReliableCommands(ENetChannel channel, ENetIncomingCommand? queuedCommand)
+        {
+            throw new NotImplementedException();
+        }
+
+        internal void DispatchIncomingUnreliableCommands(ENetChannel channel, ENetIncomingCommand? queuedCommand)
         {
             throw new NotImplementedException();
         }
@@ -930,7 +940,7 @@ namespace ENetDotNet
                 return;
 
             var data = dataReader.ReadSpan(dataLength);
-            QueueIncomingCommand(in command, data, ENetPacketFlags.Reliable, fragmentCount: 0);
+            QueueIncomingCommand(in command, data, data.Length, ENetPacketFlags.Reliable, fragmentCount: 0);
         }
 
         internal void HandleSendUnreliableCommand(in ENetProtocol command, ref ENetPacketReader dataReader)
@@ -944,7 +954,7 @@ namespace ENetDotNet
                 return;
 
             var data = dataReader.ReadSpan(dataLength);
-            QueueIncomingCommand(in command, data, ENetPacketFlags.None, fragmentCount: 0);
+            QueueIncomingCommand(in command, data, data.Length, ENetPacketFlags.None, fragmentCount: 0);
         }
 
         internal void HandleSendUnsequencedCommand(in ENetProtocol command, ref ENetPacketReader dataReader)
@@ -980,7 +990,7 @@ namespace ENetDotNet
             if ((this.unsequencedWindow[index / 32] & (1 << unchecked((int)(index % 32)))) != 0)
                 return;
 
-            if (QueueIncomingCommand(in command, data, ENetPacketFlags.Unsequenced, fragmentCount: 0) == null)
+            if (QueueIncomingCommand(in command, data, data.Length, ENetPacketFlags.Unsequenced, fragmentCount: 0) == null)
                 return;
 
             this.unsequencedWindow[index / 32] |= unchecked((uint)(1 << (int)(index % 32)));
@@ -1021,67 +1031,70 @@ namespace ENetDotNet
                 return;
 
 
-            /*
-    for (currentCommand = enet_list_previous (enet_list_end (& channel -> incomingReliableCommands));
-         currentCommand != enet_list_end (& channel -> incomingReliableCommands);
-         currentCommand = enet_list_previous (currentCommand))
-    {
-       ENetIncomingCommand * incomingCommand = (ENetIncomingCommand *) currentCommand;
 
-       if (startSequenceNumber >= channel -> incomingReliableSequenceNumber)
-       {
-          if (incomingCommand -> reliableSequenceNumber < channel -> incomingReliableSequenceNumber)
-            continue;
-       }
-       else
-       if (incomingCommand -> reliableSequenceNumber >= channel -> incomingReliableSequenceNumber)
-         break;
+            var startCommand = default(ENetIncomingCommand);
+            var currentCommandNode = default(PooledLinkedList<ENetIncomingCommand>.Node);
+            while (channel.incomingReliableCommands.IterateBackward(ref currentCommandNode))
+            {
+                var incomingCommand = currentCommandNode!.Value;
 
-       if (incomingCommand -> reliableSequenceNumber <= startSequenceNumber)
-       {
-          if (incomingCommand -> reliableSequenceNumber < startSequenceNumber)
-            break;
-        
-          if ((incomingCommand -> command.header.command & ENET_PROTOCOL_COMMAND_MASK) != ENET_PROTOCOL_COMMAND_SEND_FRAGMENT ||
-              totalLength != incomingCommand -> packet -> dataLength ||
-              fragmentCount != incomingCommand -> fragmentCount)
-            return -1;
+                if (startSequenceNumber >= channel.incomingReliableSequenceNumber)
+                {
+                    if (incomingCommand.reliableSequenceNumber < channel.incomingReliableSequenceNumber)
+                        continue;
+                }
+                else
+                if (incomingCommand.reliableSequenceNumber >= channel.incomingReliableSequenceNumber)
+                    break;
 
-          startCommand = incomingCommand;
-          break;
-       }
-    }
- 
-    if (startCommand == NULL)
-    {
-       ENetProtocol hostCommand = * command;
+                if (incomingCommand.reliableSequenceNumber <= startSequenceNumber)
+                {
+                    if (incomingCommand.reliableSequenceNumber < startSequenceNumber)
+                        break;
 
-       hostCommand.header.reliableSequenceNumber = startSequenceNumber;
+                    if ((incomingCommand.command.Header.Command & ENET_PROTOCOL_COMMAND_MASK) != ENET_PROTOCOL_COMMAND_SEND_FRAGMENT ||
+                        totalLength != incomingCommand.packet!.DataLength ||
+                        fragmentCount != incomingCommand.fragments.Count)
+                        return;
 
-       startCommand = enet_peer_queue_incoming_command (peer, & hostCommand, NULL, totalLength, ENET_PACKET_FLAG_RELIABLE, fragmentCount);
-       if (startCommand == NULL)
-         return -1;
-    }
-    
-    if ((startCommand -> fragments [fragmentNumber / 32] & (1 << (fragmentNumber % 32))) == 0)
-    {
-       -- startCommand -> fragmentsRemaining;
+                    startCommand = incomingCommand;
+                    break;
+                }
+            }
 
-       startCommand -> fragments [fragmentNumber / 32] |= (1 << (fragmentNumber % 32));
+            if (startCommand == null)
+            {
+                ENetProtocol hostCommand = command;
 
-       if (fragmentOffset + fragmentLength > startCommand -> packet -> dataLength)
-         fragmentLength = startCommand -> packet -> dataLength - fragmentOffset;
+                hostCommand.Header.ReliableSequenceNumber = startSequenceNumber;
 
-       memcpy (startCommand -> packet -> data + fragmentOffset,
-               (enet_uint8 *) command + sizeof (ENetProtocolSendFragment),
-               fragmentLength);
+                startCommand = QueueIncomingCommand(in hostCommand,
+                                                    data: ReadOnlySpan<byte>.Empty,
+                                                    dataLength: (int)totalLength,
+                                                    flags: ENetPacketFlags.Reliable,
+                                                    fragmentCount: fragmentCount);
+                if (startCommand == null)
+                    return;
+            }
 
-        if (startCommand -> fragmentsRemaining <= 0)
-          enet_peer_dispatch_incoming_reliable_commands (peer, channel, NULL);
-    }
+            unchecked
+            {
+                if ((startCommand.fragments[(int)(fragmentNumber / 32)] & ((1 << ((int)fragmentNumber % 32)))) == 0)
+                {
+                    --startCommand.fragmentsRemaining;
 
-    return 0;
-             */
+                    startCommand.fragments[(int)(fragmentNumber / 32)] |= (uint)(1 << ((int)(fragmentNumber % 32)));
+
+                    if (fragmentOffset + fragmentLength > startCommand.packet!.DataLength)
+                        fragmentLength = (ushort)(startCommand.packet.DataLength - fragmentOffset);
+
+                    var data = dataReader.ReadSpan(fragmentLength);
+                    data.CopyTo(startCommand.packet.Data.Span[(int)fragmentOffset..]);
+
+                    if (startCommand.fragmentsRemaining <= 0)
+                        DispatchIncomingReliableCommands(channel, queuedCommand: null);
+                }
+            }
         }
 
         internal void HandleSendUnreliableFragmentCommand(in ENetProtocol command, ref ENetPacketReader dataReader) { throw new NotImplementedException(); }
