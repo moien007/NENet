@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 
 using ENetDotNet.Internal;
@@ -14,6 +15,13 @@ namespace ENetDotNet
         public PooledLinkedList<ENetAcknowledge>.Node? AcknowledgementListNode;
         public uint SentTime;
         public ENetProtocolAcknowledge Command;
+
+        public void Reset()
+        {
+            AcknowledgementListNode?.Remove();
+            SentTime = default;
+            Command = default;
+        }
     }
 
     internal sealed class ENetIncomingCommand
@@ -25,6 +33,18 @@ namespace ENetDotNet
         public readonly List<uint> fragments = new();
         public uint fragmentsRemaining;
         public ENetPacket? packet;
+
+        public void Reset()
+        {
+            packet?.Dispose();
+            packet = null;
+            IncomingCommandListNode?.Remove();
+            fragments.Clear();
+
+            reliableSequenceNumber = default;
+            unreliableSequenceNumber = default;
+            fragmentsRemaining = default;
+        }
     }
 
     internal sealed class ENetOutgoingCommand
@@ -40,6 +60,22 @@ namespace ENetDotNet
         public ushort sendAttempts;
         public ENetProtocol command;
         public ENetPacket? packet;
+
+        public void Reset()
+        {
+            packet?.Dispose();
+            packet = null;
+            OutgoingCommandListNode?.Remove();
+
+            reliableSequenceNumber = default;
+            unreliableSequenceNumber = default;
+            sentTime = default;
+            roundTripTimeout = default;
+            roundTripTimeoutLimit = default;
+            fragmentOffset = default;
+            fragmentLength = default;
+            sendAttempts = default;
+        }
     }
 
     internal sealed class ENetChannel
@@ -626,7 +662,65 @@ namespace ENetDotNet
 
         internal void ResetQueues()
         {
-            throw new NotImplementedException();
+            for (var current = m_AcknowledgementList.FirstNodeOrNull; current != null;)
+            {
+                var acknowledge = current.Value;
+                var next = current.Next;
+                current = next;
+
+                acknowledge.Reset();
+                Host.m_AcknowledgePool.Return(acknowledge);
+            }
+
+            for (var current = m_SentReliableCommands.FirstNodeOrNull; current != null;)
+            {
+                var outgoingCommand = current.Value;
+                var next = current.Next;
+                current = next;
+
+                outgoingCommand.Reset();
+                Host.m_OutgoingCommandPool.Return(outgoingCommand);
+            }
+
+            for (var current = m_OutgoingCommands.FirstNodeOrNull; current != null;)
+            {
+                var outgoingCommand = current.Value;
+                var next = current.Next;
+                current = next;
+
+                outgoingCommand.Reset();
+                Host.m_OutgoingCommandPool.Return(outgoingCommand);
+            }
+
+            foreach (var outgoingCommand in m_SendFragmentsBuffer)
+            {
+                outgoingCommand.Reset();
+                Host.m_OutgoingCommandPool.Return(outgoingCommand);
+            }
+            m_SendFragmentsBuffer.Clear();
+
+            foreach (var channel in m_ChannelList)
+            {
+                for (var current = channel.incomingReliableCommands.FirstNodeOrNull; current != null;)
+                {
+                    var incomingCommand = current.Value;
+                    var next = current.Next;
+                    current = next;
+
+                    incomingCommand.Reset();
+                    Host.m_IncomingCommandPool.Return(incomingCommand);
+                }
+
+                for (var current = channel.incomingUnreliableCommands.FirstNodeOrNull; current != null;)
+                {
+                    var incomingCommand = current.Value;
+                    var next = current.Next;
+                    current = next;
+
+                    incomingCommand.Reset();
+                    Host.m_IncomingCommandPool.Return(incomingCommand);
+                }
+            }
         }
 
         internal void HandleConnectCommand(in ENetProtocolConnect connect, ref ENetPacketReader dataReader)
