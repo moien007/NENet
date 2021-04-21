@@ -1030,8 +1030,6 @@ namespace ENetDotNet
                 fragmentLength > totalLength - fragmentOffset)
                 return;
 
-
-
             var startCommand = default(ENetIncomingCommand);
             var currentCommandNode = default(PooledLinkedList<ENetIncomingCommand>.Node);
             while (channel.incomingReliableCommands.IterateBackward(ref currentCommandNode))
@@ -1073,6 +1071,7 @@ namespace ENetDotNet
                                                     dataLength: (int)totalLength,
                                                     flags: ENetPacketFlags.Reliable,
                                                     fragmentCount: fragmentCount);
+
                 if (startCommand == null)
                     return;
             }
@@ -1097,6 +1096,114 @@ namespace ENetDotNet
             }
         }
 
-        internal void HandleSendUnreliableFragmentCommand(in ENetProtocol command, ref ENetPacketReader dataReader) { throw new NotImplementedException(); }
+        internal void HandleSendUnreliableFragmentCommand(in ENetProtocol command, ref ENetPacketReader dataReader)
+        {
+            if (command.Header.ChannelID >= this.ChannelCount ||
+                (this.m_State != ENetPeerState.Connected && this.m_State != ENetPeerState.DisconnectLater))
+                return;
+
+            var fragmentLength = (command.SendFragment.DataLength);
+            if (fragmentLength > Host.maximumPacketSize ||
+                dataReader.Left.Length < fragmentLength)
+                return;
+
+            var channel = GetOrAddChannelById(command.Header.ChannelID);
+            var reliableSequenceNumber = command.Header.ReliableSequenceNumber;
+            var startSequenceNumber = command.SendFragment.StartSequenceNumber;
+
+            var reliableWindow = reliableSequenceNumber / ENET_PEER_RELIABLE_WINDOW_SIZE;
+            var currentWindow = channel.incomingReliableSequenceNumber / ENET_PEER_RELIABLE_WINDOW_SIZE;
+
+            if (reliableSequenceNumber < channel.incomingReliableSequenceNumber)
+                reliableWindow += ENET_PEER_RELIABLE_WINDOWS;
+
+            if (reliableWindow < currentWindow || reliableWindow >= currentWindow + ENET_PEER_FREE_RELIABLE_WINDOWS - 1)
+                return;
+
+            if (reliableSequenceNumber == channel.incomingReliableSequenceNumber &&
+                startSequenceNumber <= channel.incomingUnreliableSequenceNumber)
+                return;
+
+            var fragmentNumber = (command.SendFragment.FragmentNumber);
+            var fragmentCount = (command.SendFragment.FragmentCount);
+            var fragmentOffset = (command.SendFragment.FragmentOffset);
+            var totalLength = (command.SendFragment.TotalLength);
+
+            if (fragmentCount > ENET_PROTOCOL_MAXIMUM_FRAGMENT_COUNT ||
+                fragmentNumber >= fragmentCount ||
+                totalLength > Host.maximumPacketSize ||
+                fragmentOffset >= totalLength ||
+                fragmentLength > totalLength - fragmentOffset)
+                return;
+
+            var startCommand = default(ENetIncomingCommand);
+            var currentCommandNode = default(PooledLinkedList<ENetIncomingCommand>.Node);
+            while (channel.incomingReliableCommands.IterateBackward(ref currentCommandNode))
+            {
+                var incomingCommand = currentCommandNode!.Value;
+
+                if (reliableSequenceNumber >= channel.incomingReliableSequenceNumber)
+                {
+                    if (incomingCommand.reliableSequenceNumber < channel.incomingReliableSequenceNumber)
+                        continue;
+                }
+                else
+                if (incomingCommand.reliableSequenceNumber >= channel.incomingReliableSequenceNumber)
+                    break;
+
+                if (incomingCommand.reliableSequenceNumber < reliableSequenceNumber)
+                    break;
+
+                if (incomingCommand.reliableSequenceNumber > reliableSequenceNumber)
+                    continue;
+
+                if (incomingCommand.unreliableSequenceNumber <= startSequenceNumber)
+                {
+                    if (incomingCommand.unreliableSequenceNumber < startSequenceNumber)
+                        break;
+
+                    if ((incomingCommand.command.Header.Command & ENET_PROTOCOL_COMMAND_MASK) != ENET_PROTOCOL_COMMAND_SEND_UNRELIABLE_FRAGMENT ||
+                        totalLength != incomingCommand.packet!.DataLength ||
+                        fragmentCount != incomingCommand.fragments.Count)
+                        return;
+
+                    startCommand = incomingCommand;
+                    break;
+                }
+            }
+
+            if (startCommand == null)
+            {
+                startCommand = QueueIncomingCommand(in command,
+                                                    data: ReadOnlySpan<byte>.Empty,
+                                                    dataLength: (int)totalLength,
+                                                    flags: ENetPacketFlags.UnreliableFragments,
+                                                    fragmentCount: fragmentCount);
+
+                if (startCommand == null)
+                    return;
+            }
+
+            unchecked
+            {
+                if ((startCommand.fragments[(int)(fragmentNumber / 32)] & (1 << (int)(fragmentNumber % 32))) == 0)
+                {
+                    --startCommand.fragmentsRemaining;
+
+                    startCommand.fragments[(int)(fragmentNumber / 32)] |= (uint)(1 << (int)(fragmentNumber % 32));
+
+                    if (fragmentOffset + fragmentLength > startCommand.packet!.DataLength)
+                        fragmentLength = (ushort)(startCommand.packet.DataLength - fragmentOffset);
+
+                    var data = dataReader.ReadSpan(fragmentLength);
+                    data.CopyTo(startCommand.packet.Data.Span[(int)fragmentOffset..]);
+
+                    if (startCommand.fragmentsRemaining <= 0)
+                        DispatchIncomingUnreliableCommands(channel, queuedCommand: null);
+                }
+            }
+
+            return;
+        }
     }
 }
